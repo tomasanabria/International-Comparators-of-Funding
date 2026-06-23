@@ -1,3 +1,4 @@
+import argparse
 import re
 from pathlib import Path
 from collections import Counter, defaultdict
@@ -161,56 +162,34 @@ NORMALIZATION_MAP = {
 
 
 # ============================================================
-# COUNTRY-SPECIFIC SHEET SETTINGS
-# These are used to identify the keep column for 2020 files
-# where each country had its own affiliation flag.
+# YEAR-INDEPENDENT COUNTRY SETTINGS
+# These settings assume all future datasets use the same
+# country-specific affiliation columns.
 # ============================================================
 
-COUNTRY_SETTINGS_2020 = {
+COUNTRY_SETTINGS = {
     "China": {
-        "keep_column_candidates": ["Chinese Affiliation", "Keep / Remove"],
-        "keep_values": ["yes", "keep"],
+        "affiliation_column": "Chinese Affiliation",
         "prefix": "china",
     },
     "South Africa": {
-        "keep_column_candidates": ["South African Affiliation", "Keep / Remove"],
-        "keep_values": ["yes", "keep"],
+        "affiliation_column": "South African Affiliation",
         "prefix": "south_africa",
     },
     "United Kingdom": {
-        "keep_column_candidates": ["British Affiliation", "Keep / Remove"],
-        "keep_values": ["yes", "keep"],
+        "affiliation_column": "British Affiliation",
         "prefix": "uk",
     },
     "United States": {
-        "keep_column_candidates": ["American Affiliation", "Keep / Remove"],
-        "keep_values": ["yes", "keep"],
+        "affiliation_column": "American Affiliation",
         "prefix": "usa",
     },
 }
 
-COUNTRY_SETTINGS_2024 = {
-    "China": {
-        "keep_column_candidates": ["Keep / Remove", "Chinese Affiliation"],
-        "keep_values": ["keep", "yes"],
-        "prefix": "china",
-    },
-    "South Africa": {
-        "keep_column_candidates": ["Keep / Remove", "South African Affiliation"],
-        "keep_values": ["keep", "yes"],
-        "prefix": "south_africa",
-    },
-    "United Kingdom": {
-        "keep_column_candidates": ["Keep / Remove", "British Affiliation"],
-        "keep_values": ["keep", "yes"],
-        "prefix": "uk",
-    },
-    "United States": {
-        "keep_column_candidates": ["Keep / Remove", "American Affiliation"],
-        "keep_values": ["keep", "yes"],
-        "prefix": "usa",
-    },
-}
+
+# Values that indicate an article should be retained.
+# The main expected value is "Yes", but the others make the script safer.
+KEEP_VALUES = {"yes", "y", "true", "1", "keep"}
 
 
 # ============================================================
@@ -239,7 +218,7 @@ def remove_parenthetical_grant_codes(text: str) -> str:
 
 def normalize_spaces(text: str) -> str:
     """
-    Standardizes whitespace and strips punctuation at edges.
+    Standardizes whitespace and strips punctuation at the edges.
     """
     if pd.isna(text):
         return ""
@@ -262,8 +241,6 @@ def remove_trailing_acronym(name: str) -> str:
     "National Institutes of Health, NIH"
     becomes:
     "National Institutes of Health"
-
-    This only removes short uppercase final comma-separated parts.
     """
     name = normalize_spaces(name)
 
@@ -296,7 +273,6 @@ def clean_funder_name(raw_funder: str) -> str:
 
     # Normalize common unicode punctuation.
     name = name.replace("‐", "-")
-    name = name.replace("-", "-")
     name = name.replace("–", "-")
     name = name.replace("—", "-")
     name = name.replace("’", "'")
@@ -356,7 +332,7 @@ def split_funders(funding_details: str) -> list[str]:
 
 def find_column(df: pd.DataFrame, candidates: list[str]) -> str | None:
     """
-    Finds a column by exact candidate names.
+    Finds a column by exact name or case-insensitive match.
     """
     existing = list(df.columns)
 
@@ -375,30 +351,28 @@ def find_column(df: pd.DataFrame, candidates: list[str]) -> str | None:
     return None
 
 
-def filter_kept_articles(
-    df: pd.DataFrame,
-    keep_column_candidates: list[str],
-    keep_values: list[str],
-) -> pd.DataFrame:
+def filter_kept_articles(df: pd.DataFrame, affiliation_column: str) -> pd.DataFrame:
     """
-    Filters dataframe to kept articles using a country-specific keep column.
-    """
-    keep_column = find_column(df, keep_column_candidates)
+    Filters dataframe to articles marked Yes in the relevant country affiliation column.
 
-    if keep_column is None:
+    Example:
+    China sheet -> Chinese Affiliation = Yes
+    United States sheet -> American Affiliation = Yes
+    """
+    actual_column = find_column(df, [affiliation_column])
+
+    if actual_column is None:
         raise ValueError(
-            f"Could not find a keep column. Tried: {keep_column_candidates}. "
+            f"Could not find required affiliation column: {affiliation_column}. "
             f"Available columns: {list(df.columns)}"
         )
 
-    keep_values_lower = [v.lower().strip() for v in keep_values]
-
     mask = (
-        df[keep_column]
+        df[actual_column]
         .astype(str)
         .str.lower()
         .str.strip()
-        .isin(keep_values_lower)
+        .isin(KEEP_VALUES)
     )
 
     return df[mask].copy()
@@ -417,12 +391,28 @@ def get_article_identifier(row: pd.Series, row_index: int) -> str:
     return f"row_{row_index}"
 
 
+def get_article_title(row: pd.Series) -> str:
+    """
+    Retrieves article title if available.
+    """
+    for col in ["Title", "Document Title"]:
+        if col in row.index:
+            val = row.get(col)
+            if pd.notna(val) and str(val).strip():
+                return str(val).strip()
+
+    return ""
+
+
+# ============================================================
+# MAIN PROCESSING FUNCTIONS
+# ============================================================
+
 def process_country_sheet(
     df: pd.DataFrame,
     country_name: str,
     year: int,
-    keep_column_candidates: list[str],
-    keep_values: list[str],
+    affiliation_column: str,
     funding_column_candidates: list[str] = ["Funding Details", "Funding Sponsor", "Funding Text"],
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]:
     """
@@ -443,8 +433,7 @@ def process_country_sheet(
 
     kept_df = filter_kept_articles(
         df=df,
-        keep_column_candidates=keep_column_candidates,
-        keep_values=keep_values,
+        affiliation_column=affiliation_column,
     )
 
     funded_df = kept_df[
@@ -462,12 +451,7 @@ def process_country_sheet(
 
     for row_index, row in funded_df.iterrows():
         article_id = get_article_identifier(row, row_index)
-
-        title = ""
-        for title_col in ["Title", "Document Title"]:
-            if title_col in row.index and pd.notna(row.get(title_col)):
-                title = str(row.get(title_col)).strip()
-                break
+        title = get_article_title(row)
 
         raw_funders = split_funders(row[funding_column])
         normalized_funders_this_article = []
@@ -505,7 +489,7 @@ def process_country_sheet(
                 }
             )
 
-        # Deduplicate within article.
+        # Deduplicate within the same article.
         unique_normalized_funders = set(normalized_funders_this_article)
 
         for funder in unique_normalized_funders:
@@ -534,17 +518,21 @@ def process_country_sheet(
 
     audit_df = pd.DataFrame(audit_rows)
 
-    normalization_df = pd.DataFrame(normalization_rows).drop_duplicates()
+    normalization_df = pd.DataFrame(normalization_rows)
 
     if not normalization_df.empty:
-        normalization_df = normalization_df.sort_values(
-            by=["Normalized Funder", "Cleaned Variant", "Raw Variant As Found"]
-        ).reset_index(drop=True)
+        normalization_df = (
+            normalization_df
+            .drop_duplicates()
+            .sort_values(by=["Normalized Funder", "Cleaned Variant", "Raw Variant As Found"])
+            .reset_index(drop=True)
+        )
 
     summary = {
         "Country": country_name,
         "Year": year,
         "Total rows in sheet": len(df),
+        "Affiliation column used": affiliation_column,
         "Kept articles": len(kept_df),
         "Kept articles with funding details": len(funded_df),
         "Raw semicolon-separated funder entries": sum(
@@ -583,7 +571,12 @@ def write_country_outputs(
     method_text = pd.DataFrame(
         {
             "Method Notes": [
-                "Only retained articles were included in the funder-counting analysis.",
+                "This script is year-independent and uses standardized country-specific affiliation columns.",
+                "Only articles marked Yes in the relevant country affiliation column were included in the funder-counting analysis.",
+                "For China, the inclusion column is Chinese Affiliation.",
+                "For South Africa, the inclusion column is South African Affiliation.",
+                "For the United Kingdom, the inclusion column is British Affiliation.",
+                "For the United States, the inclusion column is American Affiliation.",
                 "Rows without Scopus Funding Details were excluded from funder-count calculations but should not be interpreted as unfunded.",
                 "Funding Details were split using semicolons.",
                 "Grant numbers and parenthetical award identifiers were removed for name cleaning.",
@@ -593,6 +586,7 @@ def write_country_outputs(
                 "Raw Occurrence Count counts every raw appearance before article-level deduplication.",
                 "Raw Variants Normalized records cleaned variants grouped under each funder.",
                 "Raw Variants As Found records original Scopus strings grouped under each funder.",
+                "No assumption was made that the first listed funder was the primary funder.",
             ]
         }
     )
@@ -634,22 +628,30 @@ def write_country_outputs(
 def process_workbook(input_file: str, output_dir: str, year: int):
     """
     Processes all country sheets in a workbook.
+
+    The workbook should contain sheets named:
+    - China
+    - South Africa
+    - United Kingdom
+    - United States
+
+    Each sheet should contain the relevant affiliation column:
+    - Chinese Affiliation
+    - South African Affiliation
+    - British Affiliation
+    - American Affiliation
     """
     input_path = Path(input_file)
     output_path = Path(output_dir)
 
-    if year == 2020:
-        country_settings = COUNTRY_SETTINGS_2020
-    elif year == 2024:
-        country_settings = COUNTRY_SETTINGS_2024
-    else:
-        raise ValueError("Year must be either 2020 or 2024.")
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input file not found: {input_path}")
 
     all_summaries = []
 
     xls = pd.ExcelFile(input_path)
 
-    for country_name, settings in country_settings.items():
+    for country_name, settings in COUNTRY_SETTINGS.items():
         if country_name not in xls.sheet_names:
             print(f"Skipping {country_name}: sheet not found.")
             continue
@@ -662,8 +664,7 @@ def process_workbook(input_file: str, output_dir: str, year: int):
             df=df,
             country_name=country_name,
             year=year,
-            keep_column_candidates=settings["keep_column_candidates"],
-            keep_values=settings["keep_values"],
+            affiliation_column=settings["affiliation_column"],
         )
 
         write_country_outputs(
@@ -679,6 +680,8 @@ def process_workbook(input_file: str, output_dir: str, year: int):
         all_summaries.append(summary)
 
     summary_df = pd.DataFrame(all_summaries)
+    output_path.mkdir(parents=True, exist_ok=True)
+
     summary_path = output_path / f"funder_processing_summary_{year}.csv"
     summary_df.to_csv(summary_path, index=False)
 
@@ -687,17 +690,46 @@ def process_workbook(input_file: str, output_dir: str, year: int):
 
 
 # ============================================================
-# RUN SCRIPT
-# Edit these paths before running.
+# COMMAND-LINE INTERFACE
 # ============================================================
 
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Clean and count Scopus funder metadata across country-year datasets."
+    )
+
+    parser.add_argument(
+        "--input",
+        required=True,
+        help="Path to the Excel workbook, e.g. 'Data Set 2024.xlsx'.",
+    )
+
+    parser.add_argument(
+        "--year",
+        required=True,
+        type=int,
+        help="Dataset year, e.g. 2020, 2024, or 2026.",
+    )
+
+    parser.add_argument(
+        "--output",
+        required=False,
+        default=None,
+        help="Output directory. If omitted, defaults to funder_outputs_YEAR.",
+    )
+
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    INPUT_FILE = "Data Set 2024.xlsx"
-    OUTPUT_DIR = "funder_outputs_2024"
-    YEAR = 2024
+    args = parse_args()
+
+    output_dir = args.output
+    if output_dir is None:
+        output_dir = f"funder_outputs_{args.year}"
 
     process_workbook(
-        input_file=INPUT_FILE,
-        output_dir=OUTPUT_DIR,
-        year=YEAR,
+        input_file=args.input,
+        output_dir=output_dir,
+        year=args.year,
     )
