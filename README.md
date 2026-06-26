@@ -62,3 +62,18 @@ The script also produces supporting sheets for auditability, including article-l
 **General command template**: python Scripts/funder_cleaning_script.py --input "Data/[FILE NAME].xlsx" --year [YEAR]
 
 Example for 2020: python Scripts/funder_cleaning_script.py --input "Data/Data Set 2020.xlsx" --year 2020
+
+## Manual Cleaning & Summary Tables
+After the funder-cleaning script generated article-level funder counts, each funder was manually reviewed and classified by "Type" and "Country of Origin". Funder type categories included "Government Agency", "Academic Institution", "International Agency", and "NGO". During this review, funders that appeared to belong to the same parent institution were noted and consolidated when there was sufficient evidence that they referred to the same broader funder.
+
+A cleaned funder dataset was then created with four columns: "Funder", "Articles Funded", "Type", and "Country of Origin". This cleaned dataset was used to generate summary tables showing the top five funders, with all remaining funders grouped as Other, as well as funded-publication counts by funder type and country of origin.
+
+These counts represent funder-publication counts rather than unique publication counts, because one article may list multiple funders.
+
+The Python code for the summary table construction workflow is stored in:
+
+**Scripts/summary_tables_script.py**
+
+**General command template**: python Scripts/summary_tables_script.py --input "Data/[CLEAN FUNDER FILE NAME].xlsx" --output "Data/[SUMMARY TABLE OUTPUT FILE NAME].xlsx"
+
+Example for China 2020: python Scripts/summary_tables_script.py --input "Data/China 2020 Clean Funders.xlsx" --output "Data/China 2020 Summary Tables.xlsx"
