@@ -4,6 +4,41 @@ from pathlib import Path
 import pandas as pd
 
 
+FUNDER_TYPE_ORDER = [
+    "Government Agency",
+    "Foundation/Charity",
+    "Public International Agency",
+    "Private International Agency",
+    "Academic Institution",
+    "Hospital System",
+    "Corporation",
+]
+
+
+FUNDER_TYPE_ALIASES = {
+    "government agency": "Government Agency",
+    "government": "Government Agency",
+    "foundation/charity": "Foundation/Charity",
+    "foundation": "Foundation/Charity",
+    "charity": "Foundation/Charity",
+    "ngo": "Foundation/Charity",
+    "nonprofit": "Foundation/Charity",
+    "non-profit": "Foundation/Charity",
+    "public international agency": "Public International Agency",
+    "international public agency": "Public International Agency",
+    "private international agency": "Private International Agency",
+    "international private agency": "Private International Agency",
+    "academic institution": "Academic Institution",
+    "academic": "Academic Institution",
+    "university": "Academic Institution",
+    "hospital system": "Hospital System",
+    "hospital": "Hospital System",
+    "corporation": "Corporation",
+    "company": "Corporation",
+    "industry": "Corporation",
+}
+
+
 def normalize_text(value):
     """
     Normalizes text for column matching.
@@ -19,6 +54,18 @@ def normalize_text(value):
         .replace("_", " ")
         .replace("-", " ")
     )
+
+
+def standardize_funder_type(value):
+    """
+    Standardizes funder type labels into the final category system.
+    """
+    normalized = normalize_text(value)
+
+    if normalized in FUNDER_TYPE_ALIASES:
+        return FUNDER_TYPE_ALIASES[normalized]
+
+    return str(value).strip()
 
 
 def read_input_file(input_file: str) -> pd.DataFrame:
@@ -109,19 +156,17 @@ def read_input_file(input_file: str) -> pd.DataFrame:
     if missing_columns:
         raise ValueError(f"Missing required columns: {missing_columns}")
 
-    df = df[required_columns].copy()
-
-    return df
+    return df[required_columns].copy()
 
 
 def clean_data(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Cleans spacing and converts Articles Funded to numeric.
+    Cleans spacing, standardizes funder types, and converts Articles Funded to numeric.
     """
     df = df.copy()
 
     df["Funder"] = df["Funder"].astype(str).str.strip()
-    df["Funder Type"] = df["Funder Type"].astype(str).str.strip()
+    df["Funder Type"] = df["Funder Type"].apply(standardize_funder_type)
     df["Funder Country"] = df["Funder Country"].astype(str).str.strip()
 
     df["Articles Funded"] = pd.to_numeric(
@@ -205,16 +250,31 @@ def make_top_5_table(df: pd.DataFrame) -> pd.DataFrame:
 
 def make_funder_type_table(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Creates summary table by funder type.
+    Creates summary table by funder type using the specified category order.
     """
-    type_df = (
-        df.groupby("Funder Type", as_index=False)["Articles Funded"]
+    grouped = (
+        df.groupby("Funder Type", as_index=True)["Articles Funded"]
         .sum()
-        .sort_values(
-            by=["Articles Funded", "Funder Type"],
-            ascending=[False, True],
-        )
-        .reset_index(drop=True)
+    )
+
+    unknown_types = [
+        funder_type
+        for funder_type in grouped.index
+        if funder_type not in FUNDER_TYPE_ORDER
+    ]
+
+    if unknown_types:
+        print("\nWarning: These funder types are not in the predefined category order:")
+        for funder_type in unknown_types:
+            print(f"- {funder_type}")
+
+    final_order = FUNDER_TYPE_ORDER + sorted(unknown_types)
+
+    type_df = (
+        grouped
+        .reindex(final_order, fill_value=0)
+        .reset_index()
+        .rename(columns={"index": "Funder Type"})
     )
 
     total = type_df["Articles Funded"].sum()
