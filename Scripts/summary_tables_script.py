@@ -1,5 +1,6 @@
 import argparse
 from pathlib import Path
+from typing import Optional
 
 import pandas as pd
 
@@ -79,7 +80,7 @@ def standardize_funder_type(value):
     return str(value).strip()
 
 
-def read_input_file(input_file: str, sheet_name: str | None = None) -> pd.DataFrame:
+def read_input_file(input_file: str, sheet_name: Optional[str] = None) -> pd.DataFrame:
     """
     Reads Excel, CSV, TSV, or TXT file.
 
@@ -109,7 +110,8 @@ def read_input_file(input_file: str, sheet_name: str | None = None) -> pd.DataFr
 
         if selected_sheet not in excel_file.sheet_names:
             raise ValueError(
-                f"Sheet '{selected_sheet}' not found. Available sheets: {excel_file.sheet_names}"
+                f"Sheet '{selected_sheet}' not found. "
+                f"Available sheets: {excel_file.sheet_names}"
             )
 
         raw_df = pd.read_excel(input_path, sheet_name=selected_sheet, header=None)
@@ -151,7 +153,10 @@ def read_input_file(input_file: str, sheet_name: str | None = None) -> pd.DataFr
     # This chooses the cleaned/consolidated table on the right side.
     header_row_index, start_col_index = max(candidate_blocks, key=lambda x: x[1])
 
-    print(f"\nDetected cleaned table at row {header_row_index + 1}, column {start_col_index + 1}")
+    print(
+        f"\nDetected cleaned table at row {header_row_index + 1}, "
+        f"column {start_col_index + 1}"
+    )
 
     df = raw_df.iloc[
         header_row_index + 1 :,
@@ -242,7 +247,6 @@ def make_top_5_table(df: pd.DataFrame) -> pd.DataFrame:
     ).reset_index(drop=True)
 
     top_5_df = df.head(5)[["Funder", "Article Mentions"]].copy()
-
     other_count = df.iloc[5:]["Article Mentions"].sum()
 
     if other_count > 0:
@@ -308,7 +312,8 @@ def make_funder_type_table(df: pd.DataFrame) -> pd.DataFrame:
 
 def make_funder_country_table(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Creates summary table by funder country of origin.
+    Creates Top 5 funder countries by Article Mentions.
+    All remaining countries are grouped into Other.
     """
     country_df = (
         df.groupby("Country of Origin", as_index=False)["Article Mentions"]
@@ -320,14 +325,34 @@ def make_funder_country_table(df: pd.DataFrame) -> pd.DataFrame:
         .reset_index(drop=True)
     )
 
-    total = country_df["Article Mentions"].sum()
+    top_5_country_df = country_df.head(5).copy()
+    other_count = country_df.iloc[5:]["Article Mentions"].sum()
+
+    if other_count > 0:
+        other_row = pd.DataFrame(
+            [
+                {
+                    "Country of Origin": "Other",
+                    "Article Mentions": other_count,
+                }
+            ]
+        )
+
+        top_5_country_df = pd.concat(
+            [top_5_country_df, other_row],
+            ignore_index=True,
+        )
+
+    total = top_5_country_df["Article Mentions"].sum()
 
     if total > 0:
-        country_df["Share"] = country_df["Article Mentions"] / total
+        top_5_country_df["Share"] = (
+            top_5_country_df["Article Mentions"] / total
+        )
     else:
-        country_df["Share"] = 0
+        top_5_country_df["Share"] = 0
 
-    return country_df
+    return top_5_country_df
 
 
 def format_percentages(df: pd.DataFrame) -> pd.DataFrame:
@@ -373,7 +398,7 @@ def write_output(
 
         format_percentages(country_df).to_excel(
             writer,
-            sheet_name="By Funder Country",
+            sheet_name="Top 5 Funder Countries",
             index=False,
         )
 
@@ -387,7 +412,11 @@ def write_output(
     print(f"Summary tables saved to: {output_path}")
 
 
-def process_summary_tables(input_file: str, output_file: str, sheet_name: str | None = None):
+def process_summary_tables(
+    input_file: str,
+    output_file: str,
+    sheet_name: Optional[str] = None,
+):
     """
     Full processing workflow.
     """
