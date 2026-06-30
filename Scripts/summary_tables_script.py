@@ -23,6 +23,7 @@ FUNDER_TYPE_ALIASES = {
     "charity": "Foundation/Charity",
     "ngo": "Foundation/Charity",
     "nonprofit": "Foundation/Charity",
+    "non profit": "Foundation/Charity",
     "non-profit": "Foundation/Charity",
     "public international agency": "Public International Agency",
     "international public agency": "Public International Agency",
@@ -37,6 +38,16 @@ FUNDER_TYPE_ALIASES = {
     "company": "Corporation",
     "industry": "Corporation",
 }
+
+
+VALID_ARTICLE_HEADERS = [
+    "article mentions",
+    "articles funded",
+    "articles mentions",
+    "publication mentions",
+    "publications funded",
+    "publications",
+]
 
 
 def normalize_text(value):
@@ -68,21 +79,19 @@ def standardize_funder_type(value):
     return str(value).strip()
 
 
-def read_input_file(input_file: str) -> pd.DataFrame:
+def read_input_file(input_file: str, sheet_name: str | None = None) -> pd.DataFrame:
     """
     Reads Excel, CSV, TSV, or TXT file.
 
-    Expected input columns can be:
+    Expected cleaned table columns:
     - Funder
-    - Articles Funded
+    - Article Mentions
     - Type
     - Country of Origin
 
-    The script also accepts:
-    - Funder Type
-    - Funder Country
-
-    It can handle a title row above the real header row.
+    This script also supports files where the cleaned table appears on the
+    right side of the worksheet after the raw/manual classification table.
+    If there are two matching blocks, it selects the rightmost block.
     """
     input_path = Path(input_file)
 
@@ -90,92 +99,103 @@ def read_input_file(input_file: str) -> pd.DataFrame:
         raise FileNotFoundError(f"Input file not found: {input_path}")
 
     if input_path.suffix.lower() in [".xlsx", ".xls"]:
-        raw_df = pd.read_excel(input_path, header=None)
+        excel_file = pd.ExcelFile(input_path)
+
+        if sheet_name is None:
+            selected_sheet = excel_file.sheet_names[0]
+            print(f"\nNo sheet specified. Using first sheet: {selected_sheet}")
+        else:
+            selected_sheet = sheet_name
+
+        if selected_sheet not in excel_file.sheet_names:
+            raise ValueError(
+                f"Sheet '{selected_sheet}' not found. Available sheets: {excel_file.sheet_names}"
+            )
+
+        raw_df = pd.read_excel(input_path, sheet_name=selected_sheet, header=None)
+
     elif input_path.suffix.lower() == ".csv":
         raw_df = pd.read_csv(input_path, header=None)
+
     elif input_path.suffix.lower() in [".tsv", ".txt"]:
         raw_df = pd.read_csv(input_path, sep="\t", header=None)
+
     else:
         raise ValueError("Input file must be .xlsx, .xls, .csv, .tsv, or .txt")
 
-    header_row_index = None
+    candidate_blocks = []
 
-    for i in range(min(20, len(raw_df))):
-        row_values = [normalize_text(x) for x in raw_df.iloc[i].tolist()]
+    for row_index in range(min(30, len(raw_df))):
+        row_values = [normalize_text(x) for x in raw_df.iloc[row_index].tolist()]
 
-        has_funder = "funder" in row_values
-        has_articles = "articles funded" in row_values
-        has_type = "type" in row_values or "funder type" in row_values
-        has_country = (
-            "country of origin" in row_values
-            or "country" in row_values
-            or "funder country" in row_values
-        )
+        for col_index in range(len(row_values) - 3):
+            has_funder = row_values[col_index] == "funder"
+            has_articles = row_values[col_index + 1] in VALID_ARTICLE_HEADERS
+            has_type = row_values[col_index + 2] in ["type", "funder type"]
+            has_country = row_values[col_index + 3] in [
+                "country of origin",
+                "country",
+                "funder country",
+            ]
 
-        if has_funder and has_articles and has_type and has_country:
-            header_row_index = i
-            break
+            if has_funder and has_articles and has_type and has_country:
+                candidate_blocks.append((row_index, col_index))
 
-    if header_row_index is None:
+    if not candidate_blocks:
         raise ValueError(
-            "Could not find a header row with Funder, Articles Funded, Type, and Country of Origin."
+            "Could not find a cleaned table with columns: "
+            "Funder, Article Mentions, Type, Country of Origin."
         )
 
-    headers = raw_df.iloc[header_row_index].tolist()
-    df = raw_df.iloc[header_row_index + 1 :].copy()
-    df.columns = [str(col).strip() for col in headers]
+    # If multiple matching tables exist, select the rightmost one.
+    # This chooses the cleaned/consolidated table on the right side.
+    header_row_index, start_col_index = max(candidate_blocks, key=lambda x: x[1])
 
-    column_map = {}
+    print(f"\nDetected cleaned table at row {header_row_index + 1}, column {start_col_index + 1}")
 
-    for col in df.columns:
-        normalized = normalize_text(col)
+    df = raw_df.iloc[
+        header_row_index + 1 :,
+        start_col_index : start_col_index + 4,
+    ].copy()
 
-        if normalized == "funder":
-            column_map[col] = "Funder"
-
-        elif normalized == "articles funded":
-            column_map[col] = "Articles Funded"
-
-        elif normalized in ["type", "funder type"]:
-            column_map[col] = "Funder Type"
-
-        elif normalized in ["country of origin", "country", "funder country"]:
-            column_map[col] = "Funder Country"
-
-    df = df.rename(columns=column_map)
-
-    required_columns = [
+    df.columns = [
         "Funder",
-        "Articles Funded",
-        "Funder Type",
-        "Funder Country",
+        "Article Mentions",
+        "Type",
+        "Country of Origin",
     ]
 
-    missing_columns = [col for col in required_columns if col not in df.columns]
-
-    if missing_columns:
-        raise ValueError(f"Missing required columns: {missing_columns}")
-
-    return df[required_columns].copy()
+    return df
 
 
 def clean_data(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Cleans spacing, standardizes funder types, and converts Articles Funded to numeric.
+    Cleans spacing, standardizes funder types, and converts Article Mentions to numeric.
     """
     df = df.copy()
 
     df["Funder"] = df["Funder"].astype(str).str.strip()
-    df["Funder Type"] = df["Funder Type"].apply(standardize_funder_type)
-    df["Funder Country"] = df["Funder Country"].astype(str).str.strip()
+    df["Type"] = df["Type"].apply(standardize_funder_type)
 
-    df["Articles Funded"] = pd.to_numeric(
-        df["Articles Funded"],
+    df["Country of Origin"] = (
+        df["Country of Origin"]
+        .fillna("Not specified")
+        .astype(str)
+        .str.strip()
+    )
+
+    df.loc[
+        df["Country of Origin"].str.lower().isin(["", "nan", "none"]),
+        "Country of Origin",
+    ] = "Not specified"
+
+    df["Article Mentions"] = pd.to_numeric(
+        df["Article Mentions"],
         errors="coerce",
     )
 
-    df = df[df["Articles Funded"].notna()]
-    df["Articles Funded"] = df["Articles Funded"].astype(int)
+    df = df[df["Article Mentions"].notna()]
+    df["Article Mentions"] = df["Article Mentions"].astype(int)
 
     df = df[
         df["Funder"].notna()
@@ -188,19 +208,21 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
 
 def combine_duplicate_funders(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Combines exact duplicate funder names by summing Articles Funded.
+    Combines exact duplicate funder names by summing Article Mentions.
+
+    Keeps the first observed Type and Country of Origin.
     """
     combined_df = (
         df.groupby("Funder", as_index=False)
         .agg(
             {
-                "Articles Funded": "sum",
-                "Funder Type": "first",
-                "Funder Country": "first",
+                "Article Mentions": "sum",
+                "Type": "first",
+                "Country of Origin": "first",
             }
         )
         .sort_values(
-            by=["Articles Funded", "Funder"],
+            by=["Article Mentions", "Funder"],
             ascending=[False, True],
         )
         .reset_index(drop=True)
@@ -211,24 +233,24 @@ def combine_duplicate_funders(df: pd.DataFrame) -> pd.DataFrame:
 
 def make_top_5_table(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Creates Top 5 funders by Articles Funded.
+    Creates Top 5 funders by Article Mentions.
     All remaining funders are grouped into Other.
     """
     df = df.sort_values(
-        by=["Articles Funded", "Funder"],
+        by=["Article Mentions", "Funder"],
         ascending=[False, True],
     ).reset_index(drop=True)
 
-    top_5_df = df.head(5)[["Funder", "Articles Funded"]].copy()
+    top_5_df = df.head(5)[["Funder", "Article Mentions"]].copy()
 
-    other_count = df.iloc[5:]["Articles Funded"].sum()
+    other_count = df.iloc[5:]["Article Mentions"].sum()
 
     if other_count > 0:
         other_row = pd.DataFrame(
             [
                 {
                     "Funder": "Other",
-                    "Articles Funded": other_count,
+                    "Article Mentions": other_count,
                 }
             ]
         )
@@ -238,10 +260,10 @@ def make_top_5_table(df: pd.DataFrame) -> pd.DataFrame:
             ignore_index=True,
         )
 
-    total = top_5_df["Articles Funded"].sum()
+    total = top_5_df["Article Mentions"].sum()
 
     if total > 0:
-        top_5_df["Share"] = top_5_df["Articles Funded"] / total
+        top_5_df["Share"] = top_5_df["Article Mentions"] / total
     else:
         top_5_df["Share"] = 0
 
@@ -252,10 +274,7 @@ def make_funder_type_table(df: pd.DataFrame) -> pd.DataFrame:
     """
     Creates summary table by funder type using the specified category order.
     """
-    grouped = (
-        df.groupby("Funder Type", as_index=True)["Articles Funded"]
-        .sum()
-    )
+    grouped = df.groupby("Type", as_index=True)["Article Mentions"].sum()
 
     unknown_types = [
         funder_type
@@ -274,13 +293,13 @@ def make_funder_type_table(df: pd.DataFrame) -> pd.DataFrame:
         grouped
         .reindex(final_order, fill_value=0)
         .reset_index()
-        .rename(columns={"index": "Funder Type"})
+        .rename(columns={"index": "Type"})
     )
 
-    total = type_df["Articles Funded"].sum()
+    total = type_df["Article Mentions"].sum()
 
     if total > 0:
-        type_df["Share"] = type_df["Articles Funded"] / total
+        type_df["Share"] = type_df["Article Mentions"] / total
     else:
         type_df["Share"] = 0
 
@@ -289,22 +308,22 @@ def make_funder_type_table(df: pd.DataFrame) -> pd.DataFrame:
 
 def make_funder_country_table(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Creates summary table by funder country.
+    Creates summary table by funder country of origin.
     """
     country_df = (
-        df.groupby("Funder Country", as_index=False)["Articles Funded"]
+        df.groupby("Country of Origin", as_index=False)["Article Mentions"]
         .sum()
         .sort_values(
-            by=["Articles Funded", "Funder Country"],
+            by=["Article Mentions", "Country of Origin"],
             ascending=[False, True],
         )
         .reset_index(drop=True)
     )
 
-    total = country_df["Articles Funded"].sum()
+    total = country_df["Article Mentions"].sum()
 
     if total > 0:
-        country_df["Share"] = country_df["Articles Funded"] / total
+        country_df["Share"] = country_df["Article Mentions"] / total
     else:
         country_df["Share"] = 0
 
@@ -320,8 +339,8 @@ def format_percentages(df: pd.DataFrame) -> pd.DataFrame:
     if "Share" in df.columns:
         df["Share"] = (df["Share"] * 100).round(1).astype(str) + "%"
 
-    if "Articles Funded" in df.columns:
-        df["Articles Funded"] = df["Articles Funded"].astype(int)
+    if "Article Mentions" in df.columns:
+        df["Article Mentions"] = df["Article Mentions"].astype(int)
 
     return df
 
@@ -368,15 +387,15 @@ def write_output(
     print(f"Summary tables saved to: {output_path}")
 
 
-def process_summary_tables(input_file: str, output_file: str):
+def process_summary_tables(input_file: str, output_file: str, sheet_name: str | None = None):
     """
     Full processing workflow.
     """
-    df = read_input_file(input_file)
+    df = read_input_file(input_file, sheet_name=sheet_name)
     df = clean_data(df)
 
     print(f"\nRows after cleaning: {len(df)}")
-    print(f"Total Articles Funded counted: {df['Articles Funded'].sum()}")
+    print(f"Total Article Mentions counted: {df['Article Mentions'].sum()}")
 
     combined_df = combine_duplicate_funders(df)
 
@@ -412,6 +431,13 @@ def parse_args():
         help="Path to output Excel file.",
     )
 
+    parser.add_argument(
+        "--sheet",
+        required=False,
+        default=None,
+        help="Optional Excel sheet name to process.",
+    )
+
     return parser.parse_args()
 
 
@@ -421,4 +447,5 @@ if __name__ == "__main__":
     process_summary_tables(
         input_file=args.input,
         output_file=args.output,
+        sheet_name=args.sheet,
     )
